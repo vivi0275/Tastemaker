@@ -42,7 +42,7 @@ async function getAccessToken() {
   }
 
   if (!response.ok) {
-    throw new Error(`Spotify authentication failed (${response.status}). Check your credentials.`);
+    throw new Error('Spotify authentication failed. Check your credentials.');
   }
 
   const data = await response.json();
@@ -73,7 +73,14 @@ async function spotifyFetch(path, params = {}) {
 
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    throw new Error(`Spotify API error (${response.status})${text ? `: ${text.slice(0, 120)}` : ''}`);
+    let message = `Spotify API error (${response.status})`;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed.error?.message) message = parsed.error.message;
+    } catch {
+      if (text) message += `: ${text.slice(0, 120)}`;
+    }
+    throw new Error(message);
   }
 
   return response.json();
@@ -116,28 +123,42 @@ function normalizeTrack(track, playlistName) {
   };
 }
 
-async function findUserForArtist(artistName, artistId) {
-  const userSearch = await spotifyFetch('/search', {
-    q: artistName,
-    type: 'user',
-    limit: 5,
-  });
+function namesMatch(a, b) {
+  const left = a.toLowerCase().trim();
+  const right = b.toLowerCase().trim();
+  return left === right || left.includes(right) || right.includes(left);
+}
 
-  const users = userSearch.users?.items ?? [];
-  if (users.length > 0) return users[0];
+async function findArtistPlaylists(artistName) {
+  const seen = new Set();
+  const playlists = [];
 
-  const playlistSearch = await spotifyFetch('/search', {
-    q: artistName,
-    type: 'playlist',
-    limit: 10,
-  });
+  const queries = [artistName, `${artistName} official`, `artist:${artistName}`];
 
-  const playlists = playlistSearch.playlists?.items ?? [];
-  const owned = playlists.find(
-    (p) => p.owner?.id && (p.owner.display_name?.toLowerCase().includes(artistName.toLowerCase()) || p.owner.id === artistId)
-  );
+  for (const query of queries) {
+    const searchResult = await spotifyFetch('/search', {
+      q: query,
+      type: 'playlist',
+      limit: 10,
+    });
 
-  return owned ? { id: owned.owner.id, display_name: owned.owner.display_name } : null;
+    for (const playlist of searchResult.playlists?.items ?? []) {
+      if (!playlist?.id || seen.has(playlist.id)) continue;
+
+      const ownerName = playlist.owner?.display_name ?? '';
+      const ownerMatches = namesMatch(ownerName, artistName);
+      const playlistMatches = namesMatch(playlist.name ?? '', artistName);
+
+      if (ownerMatches || playlistMatches) {
+        seen.add(playlist.id);
+        playlists.push(playlist);
+      }
+    }
+
+    if (playlists.length >= 5) break;
+  }
+
+  return playlists;
 }
 
 export async function searchSpotify(artistName, artistId = null) {
@@ -185,20 +206,7 @@ export async function searchSpotify(artistName, artistId = null) {
       selectedArtist = artists[0];
     }
 
-    const user = await findUserForArtist(selectedArtist.name, selectedArtist.id);
-
-    if (!user) {
-      return {
-        status: 'success',
-        tracks: [],
-        artists: [],
-        artistName: selectedArtist.name,
-        message: `No public Spotify profile found for ${selectedArtist.name}. Only public playlists are accessible — liked songs remain private.`,
-      };
-    }
-
-    const playlistsData = await spotifyFetch(`/users/${user.id}/playlists`, { limit: 50 });
-    const publicPlaylists = (playlistsData.items ?? []).filter((p) => p.public !== false);
+    const publicPlaylists = await findArtistPlaylists(selectedArtist.name);
 
     if (publicPlaylists.length === 0) {
       return {
@@ -206,7 +214,7 @@ export async function searchSpotify(artistName, artistId = null) {
         tracks: [],
         artists: [],
         artistName: selectedArtist.name,
-        message: `No public playlists found for ${selectedArtist.name} on Spotify.`,
+        message: `No public playlists found for ${selectedArtist.name} on Spotify. Liked songs are private — only public playlists are accessible.`,
       };
     }
 

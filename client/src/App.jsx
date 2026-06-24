@@ -96,9 +96,9 @@ export default function App() {
           {apiStatus && (!apiStatus.soundcloud || !apiStatus.spotify) && (
             <p className="mx-auto mt-4 max-w-lg rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2 text-xs text-amber-200/80">
               {!apiStatus.soundcloud && !apiStatus.spotify
-                ? 'API keys not configured yet — add them to .env to enable search.'
+                ? 'API keys not configured yet — add them to your environment variables.'
                 : !apiStatus.soundcloud
-                  ? 'SoundCloud API key missing — SoundCloud results will be unavailable.'
+                  ? 'SoundCloud credentials missing — add SOUNDCLOUD_CLIENT_ID and SOUNDCLOUD_CLIENT_SECRET.'
                   : 'Spotify API credentials missing — Spotify results will be unavailable.'}
             </p>
           )}
