@@ -5,5 +5,6 @@ export default function handler(_req, res) {
     soundcloud: Boolean(process.env.SOUNDCLOUD_CLIENT_ID && process.env.SOUNDCLOUD_CLIENT_SECRET),
     spotify: Boolean(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET),
     lastfm: Boolean(process.env.LASTFM_API_KEY),
+    youtube: Boolean(process.env.YOUTUBE_API_KEY),
   });
 }

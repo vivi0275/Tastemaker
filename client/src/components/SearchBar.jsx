@@ -1,22 +1,22 @@
-export default function SearchBar({ value, onChange, onSubmit, loading }) {
+export default function SearchBar({ value, onChange, onSubmit, loading, compact = false }) {
   return (
-    <form onSubmit={onSubmit} className="w-full max-w-xl">
-      <div className="relative group">
+    <form onSubmit={onSubmit} className={`panel w-full max-w-xl ${compact ? 'p-1 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.6)]' : 'p-1.5'}`}>
+      <div className="relative">
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Search an artist…"
+          placeholder={compact ? 'Dig another artist…' : 'Search a DJ or producer…'}
           disabled={loading}
-          autoFocus
-          className="w-full rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] px-5 py-4 pr-28 text-base text-white placeholder:text-[var(--color-muted)] outline-none transition-all focus:border-white/20 focus:ring-2 focus:ring-white/5 disabled:opacity-50"
+          autoFocus={!compact}
+          className={`input-field w-full pr-24 disabled:opacity-50 ${compact ? 'px-3.5 py-2.5 text-sm' : 'px-4 py-3.5 text-base'}`}
         />
         <button
           type="submit"
           disabled={loading || !value.trim()}
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl bg-white px-4 py-2 text-sm font-medium text-black transition-all hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-40"
+          className="btn-accent absolute right-1.5 top-1/2 -translate-y-1/2 px-4 py-2"
         >
-          {loading ? 'Searching…' : 'Discover'}
+          {loading ? '…' : 'Dig'}
         </button>
       </div>
     </form>

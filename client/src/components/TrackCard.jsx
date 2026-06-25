@@ -1,62 +1,142 @@
-const platformStyles = {
-  SoundCloud: {
-    badge: 'bg-[var(--color-soundcloud)]/15 text-[var(--color-soundcloud)] border-[var(--color-soundcloud)]/25',
-    button: 'hover:bg-[var(--color-soundcloud)]/10 border-[var(--color-soundcloud)]/30 text-[var(--color-soundcloud)]',
-  },
-  Spotify: {
-    badge: 'bg-[var(--color-spotify)]/15 text-[var(--color-spotify)] border-[var(--color-spotify)]/25',
-    button: 'hover:bg-[var(--color-spotify)]/10 border-[var(--color-spotify)]/30 text-[var(--color-spotify)]',
-  },
-  'Last.fm': {
-    badge: 'bg-[var(--color-lastfm)]/15 text-[var(--color-lastfm)] border-[var(--color-lastfm)]/25',
-    button: 'hover:bg-[var(--color-lastfm)]/10 border-[var(--color-lastfm)]/30 text-[var(--color-lastfm)]',
-  },
+import { useMemo, useState } from 'react';
+import SoundCloudPreview from './SoundCloudPreview';
+import SpotifyPreview from './SpotifyPreview';
+
+const platformLinkLabel = {
+  SoundCloud: 'Open in SoundCloud',
+  Spotify: 'Open in Spotify',
+  'Last.fm': 'Open on Last.fm',
 };
 
-export default function TrackCard({ track, index }) {
-  const styles = platformStyles[track.source] ?? platformStyles.Spotify;
+function buildSoundCloudArtworkSrc(track) {
+  if (!track.soundcloudTrackId) return null;
+  const params = new URLSearchParams({ trackId: track.soundcloudTrackId });
+  if (track.url) params.set('url', track.url);
+  return `/api/soundcloud/artwork?${params}`;
+}
+
+function CoverArt({ track }) {
+  const candidates = useMemo(() => {
+    const list = [];
+    const proxy = track.source === 'SoundCloud' ? buildSoundCloudArtworkSrc(track) : null;
+    if (proxy) list.push(proxy);
+    if (track.artworkUrl) list.push(track.artworkUrl);
+    if (track.imageUrl) list.push(track.imageUrl);
+    return [...new Set(list.filter(Boolean))];
+  }, [track.source, track.soundcloudTrackId, track.url, track.artworkUrl, track.imageUrl]);
+
+  const [index, setIndex] = useState(0);
+  const artworkSrc = candidates[index] ?? null;
+
+  const handleImageError = () => {
+    setIndex((i) => (i + 1 < candidates.length ? i + 1 : i));
+  };
+
+  return (
+    <div className="dig-card-cover" aria-hidden="true">
+      {artworkSrc ? (
+        <img
+          src={artworkSrc}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={handleImageError}
+        />
+      ) : (
+        <div className="dig-card-cover-fallback">
+          <span>{track.source === 'Spotify' ? '♫' : '◉'}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function TrackCard({
+  track,
+  index,
+  onOutboundClick,
+  onPreviewPlay,
+  onRemove,
+  showSpotifyDisclaimer = false,
+}) {
+  const showSoundCloudPreview =
+    track.source === 'SoundCloud' && track.previewable && track.soundcloudTrackId;
+  const showSpotifyPreview =
+    track.source === 'Spotify' && track.previewable && track.previewUrl;
+
+  const handleOutboundClick = () => {
+    onOutboundClick?.({
+      platform: track.source,
+      signal: track.signal,
+      destination: track.url,
+    });
+  };
+
+  const handlePreviewPlay = () => {
+    onPreviewPlay?.({
+      trackId: track.soundcloudTrackId ?? track.spotifyId,
+      signal: track.signal,
+      platform: track.source,
+    });
+  };
+
+  const linkLabel =
+    track.kind === 'playlist' ? 'Open playlist' : platformLinkLabel[track.source] ?? `Open on ${track.source}`;
 
   return (
     <article
-      className="animate-fade-up group flex flex-col rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-raised)] p-5 transition-colors hover:border-white/10"
+      className="dig-card animate-fade-up"
       style={{ animationDelay: `${Math.min(index * 40, 400)}ms` }}
     >
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <h3 className="font-medium leading-snug text-white group-hover:text-white/90">{track.title}</h3>
-        <span
-          className={`shrink-0 rounded-full border px-2.5 py-0.5 text-[11px] font-medium uppercase tracking-wide ${styles.badge}`}
-        >
-          {track.source}
-        </span>
-      </div>
+      <h3 className="dig-card-title" title={track.title}>
+        {track.title}
+      </h3>
 
-      <p className="mb-1 text-sm text-[var(--color-muted)]">{track.artist}</p>
+      <CoverArt track={track} />
 
-      {track.meta && <p className="mb-4 text-xs text-[var(--color-muted)]/70">{track.meta}</p>}
+      <p className="dig-card-artist" title={track.artist}>
+        {track.artist}
+      </p>
 
-      <div className="mt-auto space-y-2 border-t border-[var(--color-border)] pt-4">
-        <p className="text-[11px] text-[var(--color-muted)]">
-          {track.source === 'SoundCloud' ? (
-            <>
-              Uploaded by <span className="text-white/70">{track.attribution}</span> · Source: SoundCloud
-            </>
-          ) : track.source === 'Last.fm' ? (
-            <>
-              By <span className="text-white/70">{track.attribution}</span> · Source: Last.fm
-            </>
-          ) : (
-            <>
-              By <span className="text-white/70">{track.attribution}</span> · Source: Spotify
-            </>
-          )}
-        </p>
+      {showSpotifyDisclaimer && (
+        <p className="dig-card-note">Public playlists, not private likes</p>
+      )}
+
+      <div className="dig-card-actions">
+        {showSoundCloudPreview && (
+          <SoundCloudPreview
+            trackId={track.soundcloudTrackId}
+            maxDuration={track.previewMaxDuration ?? 60}
+            attribution={track.attribution}
+            onPreviewPlay={handlePreviewPlay}
+            compact
+          />
+        )}
+
+        {showSpotifyPreview && (
+          <SpotifyPreview
+            previewUrl={track.previewUrl}
+            title={track.title}
+            onPreviewPlay={handlePreviewPlay}
+            compact
+          />
+        )}
+
+        {onRemove && (
+          <button type="button" onClick={onRemove} className="dig-card-link dig-card-link-muted">
+            Remove
+          </button>
+        )}
+
         <a
           href={track.url}
           target="_blank"
           rel="noopener noreferrer"
-          className={`inline-flex w-full items-center justify-center rounded-xl border px-4 py-2.5 text-sm font-medium transition-colors ${styles.button}`}
+          onClick={handleOutboundClick}
+          className="dig-card-link"
         >
-          {track.source === 'Last.fm' ? 'Explore on Last.fm' : `Listen on ${track.source}`}
+          {linkLabel} ↗
         </a>
       </div>
     </article>

@@ -94,6 +94,7 @@ function normalizeSimilarTrack(track, seedLabel) {
         ? `${Math.round(match * 100)}% match`
         : 'Recommended by Last.fm',
     attribution: artistName,
+    signal: 'similar',
     matchScore: match || 0,
   };
 }

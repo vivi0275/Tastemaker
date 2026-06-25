@@ -1,5 +1,6 @@
 import { searchSoundCloud } from '../server/services/soundcloud.js';
 import { searchSpotify } from '../server/services/spotify.js';
+import { searchYouTubeMixes } from '../server/services/youtube.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -14,11 +15,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Artist name is required.' });
   }
 
-  const [soundcloud, spotify] = await Promise.all([
+  const [soundcloud, spotify, youtube] = await Promise.all([
     searchSoundCloud(artist, soundcloudUserId),
     searchSpotify(artist, spotifyArtistId),
+    searchYouTubeMixes(artist),
   ]);
 
   res.setHeader('Content-Type', 'application/json');
-  res.status(200).json({ query: artist, soundcloud, spotify });
+  res.status(200).json({ query: artist, soundcloud, spotify, youtube });
 }

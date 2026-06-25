@@ -39,3 +39,15 @@ export async function checkHealth() {
   if (!response.ok) return null;
   return response.json();
 }
+
+export async function fetchYouTubeDig(videoId) {
+  const params = new URLSearchParams({ videoId });
+  const response = await fetch(`${API_BASE}/youtube/dig?${params}`);
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || data.message || 'Failed to dig this mix.');
+  }
+
+  return response.json();
+}

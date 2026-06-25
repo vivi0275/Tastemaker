@@ -1,5 +1,8 @@
 const TOKEN_URL = 'https://accounts.spotify.com/api/token';
 const API_BASE = 'https://api.spotify.com/v1';
+const SEARCH_PAGE_SIZE = 10;
+const MAX_PLAYLISTS = 8;
+const MAX_PLAYLIST_TRACKS = 50;
 
 let tokenCache = { token: null, expiresAt: 0 };
 
@@ -14,6 +17,7 @@ function notConfigured() {
   return {
     status: 'error',
     tracks: [],
+    playlists: [],
     artists: [],
     message: 'Spotify API not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to your .env file.',
   };
@@ -80,47 +84,12 @@ async function spotifyFetch(path, params = {}) {
     } catch {
       if (text) message += `: ${text.slice(0, 120)}`;
     }
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = response.status;
+    throw err;
   }
 
   return response.json();
-}
-
-async function getAllPlaylistTracks(playlistId) {
-  const tracks = [];
-  let offset = 0;
-  const limit = 100;
-
-  while (true) {
-    const data = await spotifyFetch(`/playlists/${playlistId}/tracks`, { limit, offset });
-    const items = data.items ?? [];
-
-    for (const item of items) {
-      const track = item.track;
-      if (!track || track.type !== 'track' || track.is_local) continue;
-      tracks.push(track);
-    }
-
-    if (items.length < limit) break;
-    offset += limit;
-    if (offset >= 500) break;
-  }
-
-  return tracks;
-}
-
-function normalizeTrack(track, playlistName) {
-  const artists = track.artists?.map((a) => a.name).join(', ') || 'Unknown artist';
-
-  return {
-    id: `sp-${track.id}-${playlistName}`,
-    title: track.name,
-    artist: artists,
-    source: 'Spotify',
-    url: track.external_urls?.spotify,
-    meta: `From playlist: ${playlistName}`,
-    attribution: artists,
-  };
 }
 
 function namesMatch(a, b) {
@@ -129,11 +98,163 @@ function namesMatch(a, b) {
   return left === right || left.includes(right) || right.includes(left);
 }
 
+function playlistRelevance(playlist, artistName) {
+  const name = (playlist.name ?? '').toLowerCase();
+  const owner = (playlist.owner?.display_name ?? '').toLowerCase();
+  const artist = artistName.toLowerCase();
+
+  let score = 0;
+  if (namesMatch(owner, artistName)) score += 100;
+  if (name === artist || name === `radio ${artist}`) score += 80;
+  if (name.includes(artist)) score += 40;
+  if (name.includes('radio') && name.includes(artist)) score += 30;
+  if (name.includes('set') && name.includes(artist)) score += 20;
+  if (owner.includes(artist)) score += 15;
+
+  // Penalize unrelated homonyms (pegasus, etc.)
+  if (artist.length >= 4 && name.includes(artist) === false && owner.includes(artist) === false) {
+    score -= 50;
+  }
+
+  return score;
+}
+
+function normalizeTrack(track, meta, signal = 'playlist_track') {
+  const artists = track.artists?.map((a) => a.name).join(', ') || 'Unknown artist';
+  const url = track.external_urls?.spotify ?? (track.id ? `https://open.spotify.com/track/${track.id}` : null);
+  const previewUrl = track.preview_url ?? null;
+
+  return {
+    id: `sp-${track.id}`,
+    spotifyId: track.id,
+    title: track.name,
+    artist: artists,
+    source: 'Spotify',
+    url,
+    meta,
+    signal,
+    attribution: artists,
+    kind: 'track',
+    previewUrl,
+    previewable: Boolean(previewUrl),
+    previewMaxDuration: 30,
+    artworkUrl: track.album?.images?.[0]?.url ?? null,
+  };
+}
+
+function normalizePlaylistCard(playlist, artistName) {
+  const owner = playlist.owner?.display_name ?? 'Unknown curator';
+  const ownedByArtist = namesMatch(owner, artistName);
+
+  return {
+    id: `sp-pl-${playlist.id}`,
+    spotifyPlaylistId: playlist.id,
+    title: playlist.name,
+    artist: owner,
+    source: 'Spotify',
+    url: playlist.external_urls?.spotify,
+    meta: ownedByArtist
+      ? 'Public playlist by artist'
+      : `Public playlist · curated by ${owner}`,
+    attribution: owner,
+    kind: 'playlist',
+    signal: 'playlist',
+  };
+}
+
+function mapArtistForPicker(artist) {
+  const genres = artist.genres?.filter(Boolean) ?? [];
+  const subtitle = genres.length > 0
+    ? genres.slice(0, 3).join(', ')
+    : 'Spotify artist profile';
+
+  return {
+    id: artist.id,
+    name: artist.name,
+    subtitle,
+    genres,
+    imageUrl: artist.images?.[0]?.url,
+  };
+}
+
+function extractPlaylistItems(data) {
+  const items = data.items ?? data.tracks?.items ?? [];
+  const tracks = [];
+
+  for (const entry of items) {
+    const track = entry.track ?? entry.item ?? entry;
+    if (!track || track.type !== 'track' || track.is_local) continue;
+    tracks.push(track);
+  }
+
+  return tracks;
+}
+
+async function getPlaylistItems(playlistId, maxItems = MAX_PLAYLIST_TRACKS) {
+  for (const endpoint of ['items', 'tracks']) {
+    try {
+      const data = await spotifyFetch(`/playlists/${playlistId}/${endpoint}`, {
+        limit: Math.min(maxItems, 10),
+        market: 'FR',
+      });
+      const tracks = extractPlaylistItems(data);
+      if (tracks.length > 0) return tracks;
+
+      // Paginate if first page empty but more exist
+      if (data.next && tracks.length === 0) return [];
+
+      if (tracks.length > 0 || !data.next) return tracks;
+    } catch (err) {
+      if (err.status === 403 || err.status === 401) return null;
+      throw err;
+    }
+  }
+
+  return null;
+}
+
+async function enrichPreviewUrls(tracks) {
+  const needsPreview = tracks.filter((t) => t.spotifyId && !t.previewUrl);
+  if (needsPreview.length === 0) return tracks;
+
+  const previewById = new Map();
+
+  for (let i = 0; i < needsPreview.length; i += 10) {
+    const batch = needsPreview.slice(i, i + 10).map((t) => t.spotifyId);
+    try {
+      const data = await spotifyFetch('/tracks', { ids: batch.join(','), market: 'FR' });
+      for (const track of data.tracks ?? []) {
+        if (track?.id && track.preview_url) {
+          previewById.set(track.id, track.preview_url);
+        }
+      }
+    } catch {
+      // Preview enrichment is best-effort
+    }
+  }
+
+  return tracks.map((track) => {
+    const previewUrl = track.previewUrl ?? previewById.get(track.spotifyId) ?? null;
+    return {
+      ...track,
+      previewUrl,
+      previewable: Boolean(previewUrl),
+      previewMaxDuration: 30,
+    };
+  });
+}
+
 async function findArtistPlaylists(artistName) {
   const seen = new Set();
   const playlists = [];
 
-  const queries = [artistName, `${artistName} official`, `artist:${artistName}`];
+  const queries = [
+    artistName,
+    `Radio ${artistName}`,
+    `${artistName} official`,
+    `${artistName} playlist`,
+    `${artistName} set`,
+  ];
 
   for (const query of queries) {
     const searchResult = await spotifyFetch('/search', {
@@ -144,21 +265,36 @@ async function findArtistPlaylists(artistName) {
 
     for (const playlist of searchResult.playlists?.items ?? []) {
       if (!playlist?.id || seen.has(playlist.id)) continue;
+      if (playlist.public === false) continue;
 
-      const ownerName = playlist.owner?.display_name ?? '';
-      const ownerMatches = namesMatch(ownerName, artistName);
-      const playlistMatches = namesMatch(playlist.name ?? '', artistName);
+      const score = playlistRelevance(playlist, artistName);
+      if (score <= 0) continue;
 
-      if (ownerMatches || playlistMatches) {
-        seen.add(playlist.id);
-        playlists.push(playlist);
-      }
+      seen.add(playlist.id);
+      playlists.push({
+        ...playlist,
+        ownedByArtist: namesMatch(playlist.owner?.display_name ?? '', artistName),
+        relevanceScore: score,
+      });
     }
 
-    if (playlists.length >= 5) break;
+    if (playlists.length >= MAX_PLAYLISTS) break;
   }
 
-  return playlists;
+  return playlists
+    .sort((a, b) => b.relevanceScore - a.relevanceScore || Number(b.ownedByArtist) - Number(a.ownedByArtist))
+    .slice(0, MAX_PLAYLISTS);
+}
+
+function dedupeTracks(tracks) {
+  const seen = new Set();
+
+  return tracks.filter((track) => {
+    const key = track.spotifyId ?? track.id;
+    if (!track.url || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function searchSpotify(artistName, artistId = null) {
@@ -183,6 +319,7 @@ export async function searchSpotify(artistName, artistId = null) {
         return {
           status: 'not_found',
           tracks: [],
+          playlists: [],
           artists: [],
           message: `No Spotify artist found for "${artistName}".`,
         };
@@ -192,13 +329,8 @@ export async function searchSpotify(artistName, artistId = null) {
         return {
           status: 'ambiguous',
           tracks: [],
-          artists: artists.map((a) => ({
-            id: a.id,
-            name: a.name,
-            followers: a.followers?.total ?? 0,
-            genres: a.genres?.slice(0, 3) ?? [],
-            imageUrl: a.images?.[0]?.url,
-          })),
+          playlists: [],
+          artists: artists.map(mapArtistForPicker),
           message: `Multiple Spotify artists match "${artistName}". Pick the right profile.`,
         };
       }
@@ -207,56 +339,77 @@ export async function searchSpotify(artistName, artistId = null) {
     }
 
     const publicPlaylists = await findArtistPlaylists(selectedArtist.name);
+    const playlistTrackResults = [];
+    const playlistEmbedCards = [];
+    let playlistTracksBlocked = false;
+
+    for (const playlist of publicPlaylists) {
+      const items = await getPlaylistItems(playlist.id);
+
+      if (items === null) {
+        playlistTracksBlocked = true;
+        playlistEmbedCards.push(normalizePlaylistCard(playlist, selectedArtist.name));
+        continue;
+      }
+
+      if (items.length === 0) {
+        playlistEmbedCards.push(normalizePlaylistCard(playlist, selectedArtist.name));
+        continue;
+      }
+
+      playlistTrackResults.push(
+        ...items.map((t) =>
+          normalizeTrack(t, `From playlist: ${playlist.name}`, 'playlist_track')
+        )
+      );
+    }
+
+    const playlistTracks = dedupeTracks(await enrichPreviewUrls(playlistTrackResults));
 
     if (publicPlaylists.length === 0) {
       return {
         status: 'success',
         tracks: [],
+        playlists: [],
         artists: [],
         artistName: selectedArtist.name,
-        message: `No public playlists found for ${selectedArtist.name} on Spotify. Liked songs are private — only public playlists are accessible.`,
+        message: `No public Spotify playlists found for ${selectedArtist.name}. Liked songs are private. Try SoundCloud for their dig crate.`,
       };
     }
 
-    const playlistResults = await Promise.all(
-      publicPlaylists.slice(0, 10).map(async (playlist) => {
-        try {
-          const tracks = await getAllPlaylistTracks(playlist.id);
-          return tracks.map((t) => normalizeTrack(t, playlist.name));
-        } catch {
-          return [];
-        }
-      })
-    );
-
-    const seen = new Set();
-    const tracks = playlistResults.flat().filter((t) => {
-      if (!t.url || seen.has(t.id)) return false;
-      seen.add(t.id);
-      return true;
-    });
-
-    if (tracks.length === 0) {
+    if (playlistTracks.length === 0 && playlistEmbedCards.length === 0) {
       return {
         status: 'success',
         tracks: [],
+        playlists: [],
         artists: [],
         artistName: selectedArtist.name,
-        message: `Public playlists for ${selectedArtist.name} contain no tracks.`,
+        message: `No Spotify playlist content found for ${selectedArtist.name}.`,
       };
+    }
+
+    let infoMessage = null;
+    if (playlistTracksBlocked && playlistTracks.length === 0) {
+      infoMessage =
+        'Spotify no longer shares playlist track lists with third party apps (2026). Browse each playlist below in the embedded player. Tracks from all artists included.';
+    } else if (playlistTracksBlocked && playlistTracks.length > 0) {
+      infoMessage =
+        'Some playlist track lists are blocked by Spotify. Use the embedded players below for the rest.';
     }
 
     return {
       status: 'success',
-      tracks,
+      tracks: playlistTracks,
+      playlists: playlistEmbedCards,
       artists: [],
       artistName: selectedArtist.name,
-      message: null,
+      message: infoMessage,
     };
   } catch (err) {
     return {
       status: 'error',
       tracks: [],
+      playlists: [],
       artists: [],
       message: err.message || 'Failed to fetch Spotify data.',
     };
